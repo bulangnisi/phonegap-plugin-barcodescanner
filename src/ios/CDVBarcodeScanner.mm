@@ -48,10 +48,10 @@
 // class that does the grunt work
 //------------------------------------------------------------------------------
 @interface CDVbcsProcessor : NSObject <AVCaptureMetadataOutputObjectsDelegate> {}
-@property (nonatomic, retain) CDVBarcodeScanner*           plugin;
+@property (nonatomic, retain) CDVBarcodeScanner*          plugin;
 @property (nonatomic, retain) NSString*                   callback;
 @property (nonatomic, retain) UIViewController*           parentViewController;
-@property (nonatomic, retain) CDVbcsViewController*        viewController;
+@property (nonatomic, retain) CDVbcsViewController*       viewController;
 @property (nonatomic, retain) AVCaptureSession*           captureSession;
 @property (nonatomic, retain) AVCaptureVideoPreviewLayer* previewLayer;
 @property (nonatomic, retain) NSString*                   alternateXib;
@@ -66,6 +66,7 @@
 @property (nonatomic)         BOOL                        isFlipped;
 @property (nonatomic)         BOOL                        isTransitionAnimated;
 @property (nonatomic)         BOOL                        isSuccessBeepEnabled;
+@property (nonatomic)         NSString*                   statusMessage;
 
 
 - (id)initWithPlugin:(CDVBarcodeScanner*)plugin callback:(NSString*)callback parentViewController:(UIViewController*)parentViewController alterateOverlayXib:(NSString *)alternateXib;
@@ -101,6 +102,10 @@
 @property (nonatomic, retain) IBOutlet UIView* overlayView;
 @property (nonatomic, retain) UIToolbar * toolbar;
 @property (nonatomic, retain) UIView * reticleView;
+@property (nonatomic, retain) UIImageView * buttonTorch;
+@property (nonatomic, retain) UIView * lineView;
+@property (nonatomic, strong) CADisplayLink * scanLineRefresh;
+@property (nonatomic)         int scanLineStep;
 // unsafe_unretained is equivalent to assign - used to prevent retain cycles in the property below
 @property (nonatomic, unsafe_unretained) id orientationDelegate;
 
@@ -108,10 +113,12 @@
 - (void)startCapturing;
 - (UIView*)buildOverlayView;
 - (UIImage*)buildReticleImage;
+- (UIImage*)buildLineImage;
 - (void)shutterButtonPressed;
 - (IBAction)cancelButtonPressed:(id)sender;
 - (IBAction)flipCameraButtonPressed:(id)sender;
 - (IBAction)torchButtonPressed:(id)sender;
+- (IBAction)startRefresh:(id)sender;
 
 @end
 
@@ -213,6 +220,8 @@
     processor.isTransitionAnimated = !disableAnimations;
 
     processor.formats = options[@"formats"];
+    
+    processor.statusMessage = options[@"prompt"];
 
     [processor performSelector:@selector(scanBarcode) withObject:nil afterDelay:0];
 }
@@ -364,14 +373,21 @@ parentViewController:(UIViewController*)parentViewController
 }
 
 //--------------------------------------------------------------------------
+// 扫码结束时调用
 - (void)barcodeScanDone:(void (^)(void))callbackBlock {
+    NSLog(@"扫码结束 done done ============");
     self.capturing = NO;
     [self.captureSession stopRunning];
     [self.parentViewController dismissViewControllerAnimated:self.isTransitionAnimated completion:callbackBlock];
 
-    // viewcontroller holding onto a reference to us, release them so they
+    // 释放扫码线刷新
+    [self.viewController.scanLineRefresh invalidate];
+    self.viewController.scanLineRefresh = nil;
+    
+    // viewcontroller holding onto a reference to us, release them so they will release us
     // will release us
     self.viewController = nil;
+    
 }
 
 //--------------------------------------------------------------------------
@@ -427,6 +443,9 @@ parentViewController:(UIViewController*)parentViewController
 }
 
 //--------------------------------------------------------------------------
+// 事件定义
+//--------------------------------------------------------------------------
+// 取消扫码
 - (void)barcodeScanCancelled {
     [self barcodeScanDone:^{
         [self.plugin returnSuccess:@"" format:@"" cancelled:TRUE flipped:self.isFlipped callback:self.callback];
@@ -435,7 +454,7 @@ parentViewController:(UIViewController*)parentViewController
         self.isFlipped = NO;
     }
 }
-
+// 切换前后摄像头
 - (void)flipCamera {
     self.isFlipped = YES;
     self.isFrontCamera = !self.isFrontCamera;
@@ -446,18 +465,36 @@ parentViewController:(UIViewController*)parentViewController
     [self performSelector:@selector(scanBarcode) withObject:nil afterDelay:0.1];
     }];
 }
-
+// 开关电筒
 - (void)toggleTorch {
   AVCaptureDevice *device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
   [device lockForConfiguration:nil];
   if (device.flashActive) {
+    UIImage* tourchImg = [UIImage imageNamed:@"CDVBarcodeScanner.bundle/torch_off"];
+    self.viewController.buttonTorch.image = tourchImg;
     [device setTorchMode:AVCaptureTorchModeOff];
     [device setFlashMode:AVCaptureFlashModeOff];
   } else {
+    UIImage* tourchImg = [UIImage imageNamed:@"CDVBarcodeScanner.bundle/torch_on"];
+    self.viewController.buttonTorch.image = tourchImg;
     [device setTorchModeOnWithLevel:AVCaptureMaxAvailableTorchLevel error:nil];
     [device setFlashMode:AVCaptureFlashModeOn];
   }
   [device unlockForConfiguration];
+}
+
+// 绘制刷新定时器
+- (void)scanLineRefresh {
+    UIView* scanLine = self.viewController.lineView;
+    CGRect bounds = self.viewController.reticleView.frame;
+    double scale = 3.57142857;
+    int step = self.viewController.scanLineStep ++;
+    if(step > (bounds.size.height - bounds.size.height / scale)){
+        step = self.viewController.scanLineStep = 0;
+    }
+    
+    scanLine.transform = CGAffineTransformMakeTranslation(0, +step);
+    
 }
 
 //--------------------------------------------------------------------------
@@ -759,6 +796,12 @@ parentViewController:(UIViewController*)parentViewController
 
 //--------------------------------------------------------------------------
 - (void)viewDidAppear:(BOOL)animated {
+    NSLog(@"view did appear 启动定时器 =======");
+    self.scanLineStep = 0;
+    self.scanLineRefresh = [CADisplayLink displayLinkWithTarget:self selector:@selector(startRefresh:)];
+    // 每隔1帧调用一次
+    self.scanLineRefresh.frameInterval = 1;
+    [self.scanLineRefresh addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSDefaultRunLoopMode];
     // setup capture preview layer
     AVCaptureVideoPreviewLayer* previewLayer = self.processor.previewLayer;
     previewLayer.frame = self.view.bounds;
@@ -801,7 +844,13 @@ parentViewController:(UIViewController*)parentViewController
   [self.processor performSelector:@selector(toggleTorch) withObject:nil afterDelay:0];
 }
 
+- (IBAction)startRefresh:(id)sender
+{
+    [self.processor performSelector:@selector(scanLineRefresh) withObject:nil afterDelay:0];
+}
+
 //--------------------------------------------------------------------------
+// 从xlib中加载视图
 - (UIView *)buildOverlayViewFromXib
 {
     [[NSBundle mainBundle] loadNibNamed:self.alternateXib owner:self options:NULL];
@@ -825,8 +874,8 @@ parentViewController:(UIViewController*)parentViewController
 }
 
 //--------------------------------------------------------------------------
+//按钮布局
 - (UIView*)buildOverlayView {
-
     if ( nil != self.alternateXib )
     {
         return [self buildOverlayViewFromXib];
@@ -838,95 +887,103 @@ parentViewController:(UIViewController*)parentViewController
     overlayView.autoresizesSubviews = YES;
     overlayView.autoresizingMask    = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     overlayView.opaque              = NO;
+    
+    // 绘制蒙版
+    UIImage* maskImage = [self buildMaskImage];
+    UIView* maskView = [[UIImageView alloc] initWithImage:maskImage];
+    maskView.opaque = NO;
+    maskView.contentMode = UIViewContentModeScaleAspectFill;
+    maskView.autoresizingMask = 0;
+    [overlayView addSubview: maskView];
+    
+    // 取消按钮
+    UIImage* cancelImg = [UIImage imageNamed:@"CDVBarcodeScanner.bundle/cancel"];
+    UIImageView* buttonCancel = [[UIImageView alloc] initWithImage:cancelImg];
+    // 设置按钮的大小
+    buttonCancel.frame = CGRectMake(bounds.size.width/2 - 21 - 60, bounds.size.height - (36 + 80), 42, 42);
+    // 注册点击事件
+    [buttonCancel setUserInteractionEnabled:YES];
+    [buttonCancel addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(cancelButtonPressed:)]];
+    // 将按钮添加到rootView控件中
+    [overlayView addSubview:buttonCancel];
+    
+    // 电筒按钮
+    UIImage* tourchImg = [UIImage imageNamed:@"CDVBarcodeScanner.bundle/torch_off"];
+    self.buttonTorch = [[UIImageView alloc] initWithImage:tourchImg];
+    // 设置按钮的大小
+    self.buttonTorch.frame = CGRectMake(bounds.size.width/2 - 21 + 60, bounds.size.height - (36 + 80), 42, 42);
+    // 注册点击事件
+    [self.buttonTorch setUserInteractionEnabled:YES];
+    [self.buttonTorch addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(torchButtonPressed:)]];
+    // 将按钮添加到rootView控件中
+    [overlayView addSubview:self.buttonTorch];
+    
+    // 扫码消息文本
+    UITextField * textField = [[UITextField alloc]initWithFrame:CGRectMake(0, 50, bounds.size.width, 50)];
+    textField.textColor = [UIColor whiteColor];
+    textField.textAlignment = NSTextAlignmentCenter;
+    textField.text = self.processor.statusMessage;
+    textField.enabled = NO;
+    [overlayView addSubview:textField];
 
-    self.toolbar = [[UIToolbar alloc] init];
-    self.toolbar.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-
-    id cancelButton = [[UIBarButtonItem alloc]
-                       initWithBarButtonSystemItem:UIBarButtonSystemItemCancel
-                       target:(id)self
-                       action:@selector(cancelButtonPressed:)
-                       ];
-
-
-    id flexSpace = [[UIBarButtonItem alloc]
-                    initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace
-                    target:nil
-                    action:nil
-                    ];
-
-    id flipCamera = [[UIBarButtonItem alloc]
-                       initWithBarButtonSystemItem:UIBarButtonSystemItemCamera
-                       target:(id)self
-                       action:@selector(flipCameraButtonPressed:)
-                       ];
-
-    NSMutableArray *items;
-
-#if USE_SHUTTER
-    id shutterButton = [[UIBarButtonItem alloc]
-                        initWithBarButtonSystemItem:UIBarButtonSystemItemCamera
-                        target:(id)self
-                        action:@selector(shutterButtonPressed)
-                        ];
-
-    if (_processor.isShowFlipCameraButton) {
-      items = [NSMutableArray arrayWithObjects:flexSpace, cancelButton, flexSpace, flipCamera, shutterButton, nil];
-    } else {
-      items = [NSMutableArray arrayWithObjects:flexSpace, cancelButton, flexSpace, shutterButton, nil];
-    }
-#else
-    if (_processor.isShowFlipCameraButton) {
-      items = [@[flexSpace, cancelButton, flexSpace, flipCamera] mutableCopy];
-    } else {
-      items = [@[flexSpace, cancelButton, flexSpace] mutableCopy];
-    }
-#endif
-
-    if (_processor.isShowTorchButton && !_processor.isFrontCamera) {
-      AVCaptureDevice *device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
-      if ([device hasTorch] && [device hasFlash]) {
-        NSURL *bundleURL = [[NSBundle mainBundle] URLForResource:@"CDVBarcodeScanner" withExtension:@"bundle"];
-        NSBundle *bundle = [NSBundle bundleWithURL:bundleURL];
-        NSString *imagePath = [bundle pathForResource:@"torch" ofType:@"png"];
-        UIImage *image = [UIImage imageWithContentsOfFile:imagePath];
-
-        id torchButton = [[UIBarButtonItem alloc]
-                           initWithImage:image
-                                   style:UIBarButtonItemStylePlain
-                                  target:(id)self
-                                  action:@selector(torchButtonPressed:)
-                           ];
-
-      [items insertObject:torchButton atIndex:0];
-    }
-  }
-    self.toolbar.items = items;
-    [overlayView addSubview: self.toolbar];
-
+    // 绘制扫码框
     UIImage* reticleImage = [self buildReticleImage];
     self.reticleView = [[UIImageView alloc] initWithImage:reticleImage];
 
     self.reticleView.opaque           = NO;
     self.reticleView.contentMode      = UIViewContentModeScaleAspectFit;
-    self.reticleView.autoresizingMask = (UIViewAutoresizing) (0
-        | UIViewAutoresizingFlexibleLeftMargin
-        | UIViewAutoresizingFlexibleRightMargin
-        | UIViewAutoresizingFlexibleTopMargin
-        | UIViewAutoresizingFlexibleBottomMargin)
-    ;
-
+    self.reticleView.autoresizingMask = 0;
     [overlayView addSubview: self.reticleView];
+    
+    // 绘制扫码线
+    double offsetWidth = bounds.size.width / 9.375;
+    double offsetHeight = bounds.size.height / 22.233333;
+    UIImage* lineImage = [UIImage imageNamed:@"CDVBarcodeScanner.bundle/line"];;
+    self.lineView = [[UIImageView alloc] initWithImage:lineImage];
+    self.lineView.frame = CGRectMake(bounds.size.width / 4 -  offsetWidth, bounds.size.height / 4 + offsetHeight, bounds.size.width / 2 + offsetWidth * 2, 4);
+    self.lineView.opaque           = NO;
+    self.lineView.contentMode      = UIViewContentModeScaleAspectFit;
+    self.lineView.autoresizingMask = 0;
+    [overlayView addSubview: self.lineView];
+    
+    
     [self resizeElements];
     return overlayView;
 }
-
 //--------------------------------------------------------------------------
 
 #define RETICLE_SIZE    500.0f
-#define RETICLE_WIDTH    10.0f
+#define RETICLE_WIDTH    4.0f
 #define RETICLE_OFFSET   60.0f
 #define RETICLE_ALPHA     0.4f
+
+//--------------------------------------------------------------------------
+// 绘制蒙版
+//--------------------------------------------------------------------------
+- (UIImage*)buildMaskImage {
+    UIImage* result;
+    CGRect bounds = self.view.bounds;
+    UIGraphicsBeginImageContext(CGSizeMake(bounds.size.width, bounds.size.height));
+    CGContextRef context = UIGraphicsGetCurrentContext();
+    
+    UIColor* color = [UIColor colorWithRed:0.0 green:0.0 blue:0.0 alpha:0.4f];
+    CGContextSetLineWidth(context, 0);
+    CGContextSetFillColorWithColor(context, color.CGColor);
+    
+    double scaleWidth = 8.5227277;
+    double scaleHeight = 3.51052632;
+    double offsetWidth = bounds.size.width / scaleWidth;
+    double offsetHeight = bounds.size.height / scaleHeight;
+    
+    CGContextAddRect(context, CGRectMake(0 ,0 , bounds.size.width, offsetHeight));
+    CGContextAddRect(context, CGRectMake(0 ,bounds.size.height - offsetHeight , bounds.size.width, offsetHeight));
+    CGContextAddRect(context, CGRectMake(0 ,0 , offsetWidth, bounds.size.height));
+    CGContextAddRect(context, CGRectMake(bounds.size.width - offsetWidth ,0 , offsetWidth, bounds.size.height));
+    CGContextDrawPath(context, kCGPathFillStroke);
+    result = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return result;
+}
 
 //-------------------------------------------------------------------------
 // builds the green box and red line
@@ -935,32 +992,61 @@ parentViewController:(UIViewController*)parentViewController
     UIImage* result;
     UIGraphicsBeginImageContext(CGSizeMake(RETICLE_SIZE, RETICLE_SIZE));
     CGContextRef context = UIGraphicsGetCurrentContext();
-
+   
+    // 绘制扫描线
     if (self.processor.is1D) {
-        UIColor* color = [UIColor colorWithRed:1.0 green:0.0 blue:0.0 alpha:RETICLE_ALPHA];
-        CGContextSetStrokeColorWithColor(context, color.CGColor);
-        CGContextSetLineWidth(context, RETICLE_WIDTH);
-        CGContextBeginPath(context);
-        CGFloat lineOffset = (CGFloat) (RETICLE_OFFSET+(0.5*RETICLE_WIDTH));
-        CGContextMoveToPoint(context, lineOffset, RETICLE_SIZE/2);
-        CGContextAddLineToPoint(context, RETICLE_SIZE-lineOffset, (CGFloat) (0.5*RETICLE_SIZE));
-        CGContextStrokePath(context);
     }
 
+    // 绘制扫描框
     if (self.processor.is2D) {
-        UIColor* color = [UIColor colorWithRed:0.0 green:1.0 blue:0.0 alpha:RETICLE_ALPHA];
+        UIColor* color = [UIColor colorWithRed:53/255.0 green:182/255.0 blue:151/255.0 alpha:1];
+        
         CGContextSetStrokeColorWithColor(context, color.CGColor);
         CGContextSetLineWidth(context, RETICLE_WIDTH);
-        CGContextStrokeRect(context,
-                            CGRectMake(
-                                       RETICLE_OFFSET,
-                                       RETICLE_OFFSET,
-                                       RETICLE_SIZE-2*RETICLE_OFFSET,
-                                       RETICLE_SIZE-2*RETICLE_OFFSET
-                                       )
-                            );
+        // 左上
+        CGPoint lth[2] = {CGPointMake(RETICLE_OFFSET, RETICLE_OFFSET + 1), CGPointMake(RETICLE_OFFSET + 30, RETICLE_OFFSET + 1)};
+        CGContextAddLines(context, lth, 2);
+        CGPoint ltv[2] = {CGPointMake(RETICLE_OFFSET + 1, RETICLE_OFFSET), CGPointMake(RETICLE_OFFSET + 1, RETICLE_OFFSET + 30)};
+        CGContextAddLines(context, ltv, 2);
+        // 左下
+        CGPoint lbh[2] = {CGPointMake(RETICLE_OFFSET, RETICLE_SIZE - RETICLE_OFFSET - 1), CGPointMake(RETICLE_OFFSET + 30, RETICLE_SIZE - RETICLE_OFFSET - 1)};
+        CGContextAddLines(context, lbh, 2);
+        CGPoint lbv[2] = {CGPointMake(RETICLE_OFFSET + 1, RETICLE_SIZE - RETICLE_OFFSET), CGPointMake(RETICLE_OFFSET + 1, RETICLE_SIZE - RETICLE_OFFSET - 30)};
+        CGContextAddLines(context, lbv, 2);
+        // 右上
+        CGPoint rth[2] = {CGPointMake(RETICLE_SIZE - RETICLE_OFFSET, RETICLE_OFFSET + 1), CGPointMake(RETICLE_SIZE - RETICLE_OFFSET - 30, RETICLE_OFFSET + 1)};
+        CGContextAddLines(context, rth, 2);
+        CGPoint rtv[2] = {CGPointMake(RETICLE_SIZE - RETICLE_OFFSET - 1, RETICLE_OFFSET), CGPointMake(RETICLE_SIZE - RETICLE_OFFSET - 1, RETICLE_OFFSET + 30)};
+        CGContextAddLines(context, rtv, 2);
+        // 右下
+        CGPoint rbh[2] = {CGPointMake(RETICLE_SIZE - RETICLE_OFFSET, RETICLE_SIZE - RETICLE_OFFSET - 1), CGPointMake(RETICLE_SIZE - RETICLE_OFFSET - 30, RETICLE_SIZE - RETICLE_OFFSET - 1)};
+        CGContextAddLines(context, rbh, 2);
+        CGPoint rbv[2] = {CGPointMake(RETICLE_SIZE - RETICLE_OFFSET - 1, RETICLE_SIZE - RETICLE_OFFSET), CGPointMake(RETICLE_SIZE - RETICLE_OFFSET - 1, RETICLE_SIZE - RETICLE_OFFSET - 30)};
+        CGContextAddLines(context, rbv, 2);
+        
+        CGContextStrokePath(context);
+        
     }
 
+    result = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return result;
+}
+
+//-------------------------------------------------------------------------
+// 绘制扫码线
+- (UIImage*)buildLineImage {
+    UIImage* result;
+    UIGraphicsBeginImageContext(CGSizeMake(RETICLE_SIZE, RETICLE_SIZE));
+    CGContextRef context = UIGraphicsGetCurrentContext();
+    
+    UIColor* color = [UIColor colorWithRed:53/255.0 green:182/255.0 blue:151/255.0 alpha:RETICLE_ALPHA];
+    CGContextSetStrokeColorWithColor(context, color.CGColor);
+    CGContextSetLineWidth(context, RETICLE_WIDTH);
+    CGPoint scanLine[2] = {CGPointMake(RETICLE_OFFSET + 20, RETICLE_OFFSET + 5), CGPointMake(RETICLE_SIZE - RETICLE_OFFSET - 20, RETICLE_OFFSET + 5)};
+    CGContextAddLines(context, scanLine, 2);
+    CGContextStrokePath(context);
+    
     result = UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
     return result;
@@ -1014,6 +1100,9 @@ parentViewController:(UIViewController*)parentViewController
     [UIView setAnimationsEnabled:YES];
 }
 
+//----------------------------------------------------------------------------------
+// 根据屏幕横放竖放重新绘制扫码框
+//----------------------------------------------------------------------------------
 -(void) resizeElements {
     CGRect bounds = self.view.bounds;
     if (@available(iOS 11.0, *)) {
