@@ -375,7 +375,6 @@ parentViewController:(UIViewController*)parentViewController
 //--------------------------------------------------------------------------
 // 扫码结束时调用
 - (void)barcodeScanDone:(void (^)(void))callbackBlock {
-    NSLog(@"扫码结束 done done ============");
     self.capturing = NO;
     [self.captureSession stopRunning];
     [self.parentViewController dismissViewControllerAnimated:self.isTransitionAnimated completion:callbackBlock];
@@ -796,7 +795,6 @@ parentViewController:(UIViewController*)parentViewController
 
 //--------------------------------------------------------------------------
 - (void)viewDidAppear:(BOOL)animated {
-    NSLog(@"view did appear 启动定时器 =======");
     self.scanLineStep = 0;
     self.scanLineRefresh = [CADisplayLink displayLinkWithTarget:self selector:@selector(startRefresh:)];
     // 每隔1帧调用一次
