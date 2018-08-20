@@ -997,7 +997,7 @@ parentViewController:(UIViewController*)parentViewController
 
     // 绘制扫描框
     if (self.processor.is2D) {
-        UIColor* color = [UIColor colorWithRed:53/255.0 green:182/255.0 blue:151/255.0 alpha:1];
+        UIColor* color = [UIColor colorWithRed:46/255.0 green:126/255.0 blue:254/255.0 alpha:1];
         
         CGContextSetStrokeColorWithColor(context, color.CGColor);
         CGContextSetLineWidth(context, RETICLE_WIDTH);
